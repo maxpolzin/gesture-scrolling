@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>gesture-scrolling test</title>
+<style>
+  body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: #f4f3ef; color: #222; }
+  #content { zoom: 1; display: grid; grid-template-columns: repeat(12, 420px); gap: 40px; padding: 24px; width: max-content; }
+  .col { border-left: 3px solid #ccc; padding-left: 16px; }
+  .col h2 { margin: 0 0 8px; font-size: 22px; }
+  .col p b { color: #888; font-weight: 600; margin-right: 6px; }
+  #panel { position: fixed; top: 12px; right: 12px; width: 420px; background: #1d1f24; color: #e8e8e8;
+           border-radius: 10px; padding: 12px; font: 13px/1.4 ui-monospace, monospace; box-shadow: 0 4px 20px #0005; z-index: 9; }
+  #panel img { width: 100%; border-radius: 6px; display: block; background: #000; min-height: 100px; }
+  #state { font-size: 22px; font-weight: 700; margin: 8px 0 4px; }
+  #state.zoom { color: #ff8a3d; } #state.scroll { color: #4f8cff; } #state.ready { color: #ddd; } #state.none { color: #777; }
+  canvas { width: 100%; height: 72px; display: block; margin: 6px 0; }
+  .row { display: flex; justify-content: space-between; }
+  .k { color: #999; }
+</style>
+</head>
+<body>
+<div id="panel">
+  <img src="/" alt="camera">
+  <div id="state" class="none">NONE</div>
+  <canvas id="tl" width="840" height="192"></canvas>
+  <div class="row"><span class="k">last 10 s:</span><span id="sum"></span></div>
+  <div class="row"><span class="k">detection</span><span id="hz"></span></div>
+  <div class="row"><span class="k">wheel events</span><span id="wheel">0</span></div>
+  <div class="row"><span class="k">page scroll x / y</span><span id="pos"></span></div>
+  <div class="row"><span class="k">text zoom (Ctrl+wheel)</span><span id="zoom">100%</span></div>
+</div>
+<div id="content"></div>
+<script>
+const words = ("lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore " +
+  "et dolore magna aliqua camera hand palm finger wheel glide momentum drag scroll window river mountain " +
+  "orange signal quiet harbor lantern copper meadow violet engine").split(" ");
+const pick = () => words[Math.floor(Math.random() * words.length)];
+const sentence = n => { const w = Array.from({length: n}, pick); w[0] = w[0][0].toUpperCase() + w[0].slice(1); return w.join(" ") + "."; };
+const content = document.getElementById("content");
+for (let c = 1; c <= 12; c++) {
+  const col = document.createElement("div"); col.className = "col";
+  let html = `<h2>Column ${c}</h2>`;
+  for (let p = 1; p <= 60; p++) html += `<p><b>${c}.${p}</b>${sentence(10 + Math.floor(Math.random() * 30))} ${sentence(8 + Math.floor(Math.random() * 20))}</p>`;
+  col.innerHTML = html; content.appendChild(col);
+}
+
+// wheel events reaching the page (proves the virtual mouse works)
+let wheelN = 0, wheelRate = 0, lastDx = 0, lastDy = 0;
+// Ctrl+wheel zooms only the text (not the browser page, so this panel stays readable)
+let zoom = 1, zoomN = 0;
+addEventListener("wheel", e => {
+  wheelN++; lastDx = e.deltaX; lastDy = e.deltaY;
+  if (!e.ctrlKey) return;
+  e.preventDefault(); zoomN++;
+  const notches = e.deltaMode === 1 ? e.deltaY / 3 : e.deltaY / 100;   // lines (Firefox) or pixels
+  zoom = Math.min(5, Math.max(0.2, zoom * Math.pow(1.1, -notches)));
+  content.style.zoom = zoom;
+}, {passive: false});
+setInterval(() => { wheelRate = wheelN; wheelN = 0; }, 1000);
+
+const tl = document.getElementById("tl"), g = tl.getContext("2d");
+const ROWS = [["right hand", "#3bb273", "#c0392b"], ["right palm", "#3bb273", "#444"],
+              ["two palms", "#3bb273", "#444"], ["mode", null, "#444"]];
+const MODE = {scroll: "#4f8cff", zoom: "#ff8a3d"};
+
+function draw(timeline) {
+  const W = tl.width, H = tl.height, rh = H / ROWS.length, lx = 190;
+  g.clearRect(0, 0, W, H); g.font = "22px monospace"; g.textBaseline = "middle";
+  ROWS.forEach(([name, on, off], r) => {
+    g.fillStyle = "#999"; g.fillText(name, 0, r * rh + rh / 2);
+    g.fillStyle = off; g.fillRect(lx, r * rh + 6, W - lx, rh - 12);
+  });
+  // each sample covers until the next one
+  for (let j = 0; j < timeline.length; j++) {
+    const [age, seen, spread, two, st] = timeline[j];
+    const next = j + 1 < timeline.length ? timeline[j + 1][0] : 0;
+    const x0 = lx + (W - lx) * (1 - age / 10), x1 = lx + (W - lx) * (1 - next / 10);
+    [seen, spread, two, MODE[st]].forEach((v, r) => {
+      g.fillStyle = v ? (ROWS[r][1] || v) : ROWS[r][2];
+      g.fillRect(x0, r * rh + 6, Math.max(1, x1 - x0), rh - 12);
+    });
+  }
+}
+
+async function poll() {
+  try {
+    const s = await (await fetch("/state")).json();
+    const el = document.getElementById("state");
+    el.textContent = s.state.toUpperCase(); el.className = s.state;
+    draw(s.timeline);
+    const n = s.timeline.length || 1;
+    const seen = s.timeline.filter(x => x[1]).length, spread = s.timeline.filter(x => x[2]).length;
+    let gaps = 0; for (let j = 1; j < s.timeline.length; j++) if (s.timeline[j - 1][1] && !s.timeline[j][1]) gaps++;
+    document.getElementById("sum").textContent = `hand ${Math.round(100 * seen / n)}%  palm ${Math.round(100 * spread / n)}%  dropouts ${gaps}`;
+    document.getElementById("hz").textContent = `${s.hz.toFixed(1)} Hz`;
+  } catch (e) { document.getElementById("state").textContent = "no connection"; }
+  document.getElementById("wheel").textContent = `${wheelRate}/s  last dx ${lastDx.toFixed(0)} dy ${lastDy.toFixed(0)}`;
+  document.getElementById("zoom").textContent = `${Math.round(zoom * 100)}%  (${zoomN} zoom events)`;
+  document.getElementById("pos").textContent = `${Math.round(scrollX)} / ${Math.round(scrollY)}`;
+  setTimeout(poll, 150);
+}
+poll();
+</script>
+</body>
+</html>

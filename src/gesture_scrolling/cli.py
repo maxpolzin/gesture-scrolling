@@ -15,13 +15,16 @@ from .pipeline import Camera, Gestures, Hands  # noqa: E402
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--camera", type=int, default=0, help="video device index (/dev/videoN)")
-    ap.add_argument("--width", type=int, default=320)
-    ap.add_argument("--height", type=int, default=240)
+    ap.add_argument("--width", type=int, default=640)
+    ap.add_argument("--height", type=int, default=480)
     ap.add_argument("--hz", type=float, default=12, help="gesture updates per second")
     ap.add_argument("--gain", type=float, default=30, help="wheel notches per full frame of hand travel")
     ap.add_argument("--min-palm", type=float, default=0.08,
                     help="ignore hands smaller than this (palm length / frame height); raise = must be closer")
+    ap.add_argument("--cooldown", type=float, default=1.0,
+                    help="seconds after scrolling stops before it can start again")
     ap.add_argument("--zoom-gain", type=float, default=6, help="zoom notches per e-fold of hand distance")
+    ap.add_argument("--only", choices=("scroll", "zoom"), help="enable only one gesture (for testing)")
     ap.add_argument("--glide", type=float, default=0.10, help="smoothing time constant of the wheel (s)")
     ap.add_argument("--invert", action="store_true", help="flip scroll direction")
     ap.add_argument("--dry-run", action="store_true", help="no virtual mouse; only print what would happen")
@@ -32,7 +35,8 @@ def main():
 
     cam = Camera(a.camera, a.width, a.height)
     hands = Hands()
-    gest = Gestures(gain=a.gain, min_palm=a.min_palm, zoom_gain=a.zoom_gain)
+    gest = Gestures(gain=a.gain, min_palm=a.min_palm, zoom_gain=a.zoom_gain, cooldown=a.cooldown,
+                    modes=(a.only,) if a.only else ("scroll", "zoom"))
     mouse = VirtualMouse(dry_run=a.dry_run, glide=a.glide, invert=a.invert)
     preview = None
     if a.preview:
@@ -54,7 +58,7 @@ def main():
                 continue
             found = hands.detect(frame)
             state, dx, dy, zoom = gest.update(found, t)
-            mouse.scroll(dx, dy, grabbing=(state == "grab"))
+            mouse.scroll(dx, dy, grabbing=(state == "scroll"))
             if zoom:
                 threading.Thread(target=mouse.zoom, args=(zoom,), daemon=True).start()
             if preview:
@@ -62,7 +66,7 @@ def main():
             if a.verbose and state != last_state:
                 print(f"{time.strftime('%H:%M:%S')} {state}", flush=True)
             if a.dry_run and (dx or dy or zoom):
-                print(f"{state:5s} scroll dx={dx:+.2f} dy={dy:+.2f} notches  zoom={zoom:+.2f}", flush=True)
+                print(f"{state:6s} scroll dx={dx:+.2f} dy={dy:+.2f} notches  zoom={zoom:+.2f}", flush=True)
             last_state = state
             n += 1
             if a.verbose and t - t_stat >= 5:
